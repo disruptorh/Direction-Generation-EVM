@@ -1,64 +1,122 @@
 # 🧭 EVM Address Generator
-[![Download Executable](https://img.shields.io/badge/Download_Executable-v1.0.0-blue?style=for-the-badge&logo=linux)](https://github.com/reimen-cpu/Direction-Generator-EVM/releases/latest/download/direction-generator) — BIP-39/32/44 & CUDA
 
-High-performance EVM (Ethereum Virtual Machine) address generator that implements the full cryptographic chain from seed phrases to public addresses. This tool features a Python-based GUI and a high-speed CUDA-accelerated C++ backend for massive batch processing.
+Generador de direcciones EVM (Ethereum) que implementa la cadena criptográfica
+completa desde la seed phrase hasta la dirección pública: **BIP-39 → BIP-32 →
+BIP-44 → secp256k1 → Keccak-256 → EIP-55**.
 
-## 🚀 Features
+![Licencia](https://img.shields.io/badge/License-Apache--2.0-yellow.svg)
 
-- **Full Standards Support**: Implements BIP-39 (Mnemonic), BIP-32 (HD Wallets), BIP-44 (Multi-Account Hierarchy), and EIP-55 (Checksum addresses).
-- **GPU Acceleration**: Uses CUDA for parallelized derivation of addresses (secp256k1 scalar multiplication and Keccak-256 hashing).
-- **Dual Interface**:
-  - **Single Mode**: Generate a single address and its private key from a phrase.
-  - **Batch Mode**: Process thousands of seed phrases from a text file and generate multiple addresses per phrase.
-- **Pure Python Fallback**: Non-critical paths (like GUI and verification) use pure Python for portability.
+## ⚠️ Dos programas independientes
 
-## 🛠 Prerequisites
+Este repositorio contiene **dos herramientas separadas que no se llaman entre
+sí**. La documentación anterior sugería que la GUI de Python aceleraba la
+derivación con el backend CUDA; no es así.
 
-- **Python 3.x**
-- **NVIDIA GPU** with CUDA support.
-- **CUDA Toolkit** installed (to compile the C++ backend).
-- **Dependencies**:
+| Fichero | Qué es | Aceleración |
+|---|---|---|
+| `direcction-generator.py` (470 líneas) | GUI en Tkinter con dos pestañas (lote / frase individual) | **CPU, Python puro**. Solo usa `pycryptodome` para Keccak-256; la aritmética de secp256k1 (`_point_add`, `_point_mul`, `_modinv`) está implementada en el propio script |
+| `direcction-generator.cu` (1123 líneas) | CLI por separado para NVIDIA GPU | **CUDA**. El kernel `compute_addresses_kernel` hace la mult. escalar y el Keccak-256 en paralelo, 256 hilos/bloque |
+
+No hay `Makefile`, ni `subprocess`, ni referencia a `nvcc` en el Python: para
+usar la GPU hay que compilar el `.cu` a mano y ejecutarlo por separado.
+
+## Requisitos
+
+- **Python 3.x** con `tkinter` (interfaz gráfica)
+- `pycryptodome` — obligatorio: el script aborta al arrancar si no está
+
   ```bash
   pip install pycryptodome
   ```
 
-## 📦 Installation & Compilation
+- **Solo para el backend CUDA:** GPU NVIDIA, Compute Capability ≥ 6.0 y el
+  CUDA Toolkit con `nvcc` en el `PATH`.
 
-1. **Clone the repository**:
-   ```bash
-   git clone <repository-url>
-   cd Direction-Generator-EVM
-   ```
+## Compilación del backend CUDA
 
-2. **Compile the CUDA Backend**:
-   Ensure you have `nvcc` in your path and run:
-   ```bash
-   make
-   ```
-   This will generate the `direcction-generator` binary.
+```bash
+nvcc -O3 -arch=sm_60 direcction-generator.cu -o direcction-generator -lcrypto
+```
 
-## 🖥 Usage
+(`-lcrypto` es necesario: PBKDF2-HMAC-SHA512 y HMAC-SHA512 salen de OpenSSL.)
 
-### Graphical Interface
-Run the main Python script:
+Ajusta `-arch` a tu GPU (`sm_61`, `sm_75`, `sm_86`, …). **No hay script de
+build ni Makefile en el repositorio**; este comando hay que correrlo a mano.
+
+## Uso
+
+### GUI (Python, CPU)
+
 ```bash
 python3 direcction-generator.py
 ```
 
-### Batch Processing
-1. Select a text file containing one seed phrase per line.
-2. Specify the number of addresses to derive per phrase (e.g., `m/44'/60'/0'/0/0` to `m/44'/60'/0'/0/9`).
-3. The results will be saved to `direcctions.txt`.
+- **Pestaña "Desde Archivo (Lote)"**: elige un `.txt` con una seed phrase por
+  línea, indica cuántas direcciones derivar por frase (`i=0..n-1`, por defecto
+  1) y pulsa **Derivar Lote**.
+- **Pestaña "Frase Individual"**: pega 12 o 24 palabras y pulsa **Generar 1
+  Dirección**.
+- Ambas aceptan una *Secret Key / Passphrase* opcional (el passphrase BIP-39).
+- Abajo hay una consola de registro con el progreso.
 
-## 🛡 Security Note
+### CLI (CUDA)
 
-This tool is designed for offline use. For maximum security, run it on an air-gapped machine. Never share your seed phrases or private keys.
+```bash
+./direcction-generator <input.txt> <output.txt> <num_addresses> [passphrase]
+```
 
-## 📜 Standards Implemented
+- Límite: entre 1 y 10000 direcciones por frase.
+- Derivación fija en `m/44'/60'/0'/0/i` (BIP-44 para Ethereum, cuenta 0).
 
-- **BIP-39**: Mnemonic code for generating deterministic keys.
-- **BIP-32**: Hierarchical Deterministic Wallets.
-- **BIP-44**: Multi-Account Hierarchy for Deterministic Wallets.
-- **secp256k1**: Elliptic curve parameters.
-- **Keccak-256**: Ethereum's hashing algorithm.
-- **EIP-55**: Mixed-case checksum address encoding.
+### Rutas y salida
+
+La GUI escribe en un directorio compartido con el resto de la suite, no en el
+directorio actual:
+
+```
+~/Escritorio/seed-tools-txt/direcctions.txt
+```
+
+(cambia a `~/Desktop/seed-tools-txt` si no existe `Escritorio`).
+
+Formato de cada línea:
+
+```
+<seed phrase> | m/44'/60'/0'/0/i | 0x<clave privada> | 0x<Dirección EIP-55>
+```
+
+## Estándares implementados
+
+- **BIP-39** — mnemónico → seed (PBKDF2-HMAC-SHA512, 2048 iteraciones,
+  salt `"mnemonic" + passphrase`)
+- **BIP-32** — wallets jerárquicas deterministas (HMAC-SHA512, derivación
+  *hardened* `0x00 || k_par || ser32(i)` y *normal* `serP(k_par) || ser32(i)`)
+- **BIP-44** — `m/44'/60'/0'/0/i`, las tres derivaciones *hardened* en CPU
+- **secp256k1** — parámetros de la curva y aritmética de punto
+- **Keccak-256** — hash de Ethereum; la dirección son los 20 últimos bytes del
+  hash de la pubkey sin comprimir `x || y`
+- **EIP-55** — codificación con checksum en mayúsculas/minúsculas
+
+## Notas de seguridad
+
+- **Ambas herramientas escriben la seed phrase en claro en el fichero de
+  salida**, junto a la clave privada. Ese archivo es tan sensible como la propia
+  frase: bórralo o cifralo después de usarlo.
+- **No se valida el checksum BIP-39.** Ni el Python ni el CUDA comprueban que la
+  frase tenga 12/24 palabras válidas ni que el checksum cuadre; derivan
+  silenciosamente de cualquier texto. Solo importa si vas a barrel tu
+  herramienta con datos de terceros.
+- El passphrase se pasa como argumento en la línea de comandos del CLI, donde
+  queda visible en `ps` y en el historial del shell. Usa la GUI si te importa.
+- Herramienta offline por diseño. Para máxima seguridad, úsala en una máquina
+  sin red y nunca compartas seed phrases ni claves privadas.
+
+## Tests
+
+No hay tests automatizados. Ambas implementaciones se pueden contrastar entre
+sí como verificación cruzada: si derivan la misma dirección para la misma
+frase, ambas implementan bien BIP-32/44.
+
+## Licencia
+
+Apache-2.0 — ver [LICENSE](LICENSE).
